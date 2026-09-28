@@ -312,6 +312,11 @@ class OperandRenderer:
         # bare form is a parse error
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", e):
             return "$" + e
+        # a bare `new X()` receiver needs explicit parens: `new X()->m()`
+        # only parses on PHP >= 8.4, while `(new X())->m()` is valid on every
+        # version — in-place execution targets 8.2/8.3.
+        if e.startswith("new "):
+            return "(" + e + ")"
         return e
 
     def callee_name(self, n: Node, which: str) -> str | None:
