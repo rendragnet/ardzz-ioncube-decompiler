@@ -193,3 +193,50 @@ __all__ = [
     "scan_wires",
     "tail_doccomment",
 ]
+
+
+def class_name_hint(stream: bytes, start: int, leaf: str, limit: int | None = None) -> str | None:
+    """Recover the declared class name from the tail descriptor records.
+
+    The encoder writes a record per declared symbol; the class record is a
+    namespaced identifier whose final segment is the source file's basename.
+    Records carry a byte length and a ``00 20`` tag; anonymous-class records
+    append ``@anonymous\\0<path>`` and are skipped. Used only when the fixed
+    window/pool recovery found no valid class name.
+    """
+    b = stream
+    e = len(b) if limit is None else min(limit, len(b))
+    i = start
+    while i + 4 <= e:
+        ln = int.from_bytes(b[i : i + 2], "little")
+        if 0 < ln < 256 and b[i + 2 : i + 4] == b"\x00\x20" and i + 4 + ln <= e:
+            payload = b[i + 4 : i + 4 + ln].split(b"\x00", 1)[0].decode("latin-1")
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\\]*", payload) and "\\" in payload:
+                if payload.rsplit("\\", 1)[-1].lower() == leaf.lower():
+                    return payload
+            i += 4 + ln
+            continue
+        i += 1
+    return None
+
+
+def class_like_names(stream: bytes, start: int, limit: int | None = None) -> list[str]:
+    """Ordered namespaced-identifier records in the tail descriptor region.
+
+    Includes class declarations and namespaced type references; used to name
+    the extra class groups of a multi-class component stream.
+    """
+    b = stream
+    e = len(b) if limit is None else min(limit, len(b))
+    out: list[str] = []
+    i = start
+    while i + 4 <= e:
+        ln = int.from_bytes(b[i : i + 2], "little")
+        if 0 < ln < 256 and b[i + 2 : i + 4] == b"\x00\x20" and i + 4 + ln <= e:
+            payload = b[i + 4 : i + 4 + ln].split(b"\x00", 1)[0].decode("latin-1")
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\\@]*", payload) and "\\" in payload:
+                out.append(payload)
+            i += 4 + ln
+            continue
+        i += 1
+    return out

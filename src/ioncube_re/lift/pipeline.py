@@ -26,6 +26,8 @@ from ..wire import gt_check, gt_sections, parse_wire
 from .signature import arg_names, arg_specs, cv_names, fn_name_of, param_list
 from .sources import best_pair, capture_pairs, m5_sample_dir, offline_parse
 from .wires import (
+    class_like_names,
+    class_name_hint,
     classrec_strings,
     desc_strings,
     pool_strings,
@@ -319,6 +321,9 @@ def lift_file(
 
     # ---- production class skeleton ----
     prodClassOpen = False
+    prodQueue: list[tuple[str, str | None]] = []
+    prodSeen: set[str] = set()
+    prodSerial = 0
     if isProd:
         tailStart = boff + bsize
         if (
@@ -329,6 +334,17 @@ def lift_file(
             rec = classrec_strings(stream, tailStart, tailStart + 0x60)
             ps = [s.decode("latin-1") for s in pool_strings(mainR["pool"])]
             cls = rec[0] if rec else (ps[1] if len(ps) > 1 else "?")
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\\]*", cls):
+                # the fixed 0x60 window and the pool can both miss the class
+                # record (an anonymous-class or property record can precede
+                # it); the record whose leaf matches this file's basename is
+                # the declaring class
+                leaf = os.path.basename(path)
+                if leaf.endswith(".php"):
+                    leaf = leaf[:-4]
+                hint = class_name_hint(stream, tailStart, leaf)
+                if hint is not None:
+                    cls = hint
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\\]*", cls):
                 # unrecoverable class name: no skeleton (the bare
                 # `class ? {` form is a parse error); the components emit
@@ -351,6 +367,11 @@ def lift_file(
                 ):
                     parent = ps[0]
             if cls is not None:
+                # a parent recovered from the pool can be the class itself in
+                # a different case (Captcha extends whmcs\utility\captcha) —
+                # extending yourself is not allowed, fall back to a base
+                if parent is not None and parent.lower().lstrip("\\") == cls.lower().lstrip("\\"):
+                    parent = None
                 # a namespaced class cannot be declared FQ (`class A\B` is a
                 # syntax error): split off a `namespace` declaration, the bare
                 # class name, and a leading-backslash FQ parent
@@ -364,16 +385,51 @@ def lift_file(
                 doc = tail_doccomment(stream, tailStart)
                 if doc is not None:
                     out.append("\n" + doc + "\n")
-                out.append(
-                    f"\nclass {cls}"
-                    + (f" extends {parent}" if parent else "")
-                    + (
-                        " { // class component: %d nodes" % mainR["thr"]
-                        if debug
-                        else " {"
+
+                def _open_class(leaf: str, ext: str | None = None) -> None:
+                    # a class body may use `parent::`; if no parent was
+                    # recovered an explicit base keeps that valid
+                    if ext is None:
+                        ext = "\\stdClass"
+                    out.append(
+                        f"\nclass {leaf}"
+                        + (f" extends {ext}" if ext else "")
+                        + (
+                            " { // class component: %d nodes" % mainR["thr"]
+                            if debug
+                            else " {"
+                        )
+                        + "\n"
                     )
-                    + "\n"
-                )
+
+                # Files that declare more than one class (a leading anonymous
+                # or nested class encoded before/among the main class) repeat
+                # method names across component groups. Merging them into one
+                # class is a compile error, so split at the first repeated
+                # name and name the groups from the tail class records.
+                fnNames = [fn_name_of(sm[0]) for sm in subMeta]
+                fnNames = [f for f in fnNames if f]
+                multi = len(fnNames) != len(set(fnNames))
+                tailLeafs: list[str] = []
+                if multi:
+                    seenLeaf = {cls}
+                    for nm in class_like_names(stream, tailStart):
+                        lf = nm.split("@")[0].rsplit("\\", 1)[-1]
+                        if (
+                            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", lf)
+                            and lf not in seenLeaf
+                        ):
+                            seenLeaf.add(lf)
+                            tailLeafs.append(lf)
+                firstAlt = tailLeafs[0] if (multi and tailLeafs) else None
+                if firstAlt is not None and firstAlt != cls:
+                    # the first component group is the leading class; keep the
+                    # main class (and remaining names) for later groups
+                    prodQueue = [(cls, parent)] + [(lf, None) for lf in tailLeafs[1:]]
+                    _open_class(firstAlt)
+                else:
+                    prodQueue = [(lf, None) for lf in tailLeafs]
+                    _open_class(cls, parent)
                 prodClassOpen = True
 
     # ---- eval class/enum recovery ----
@@ -520,6 +576,19 @@ def lift_file(
         label = f"function {classRec + '::' if classRec else ''}" + (
             fn if fn is not None else f"@{off:#x}"
         )
+        # multi-class production files: a repeated method name marks a new
+        # class group (anonymous/nested classes are encoded interleaved)
+        if prodClassOpen and fn is not None and not fn.endswith("{closure}"):
+            if fn in prodSeen:
+                out.append("}\n")
+                if prodQueue:
+                    nxt, nxtExt = prodQueue.pop(0)
+                else:
+                    prodSerial += 1
+                    nxt, nxtExt = f"{cls}_{prodSerial}", None
+                _open_class(nxt, nxtExt)
+                prodSeen = set()
+            prodSeen.add(fn)
         meta["classDepth"] = bool(openClass is not None or prodClassOpen)
         if not isProd and evalEnum and evalEnum.get("promoted") and fn == "__construct":
             from .classrec import promoted_param
