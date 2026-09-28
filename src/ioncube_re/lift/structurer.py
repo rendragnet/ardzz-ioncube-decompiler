@@ -131,8 +131,18 @@ def _jmp_return(
     tn = ctx.nodes[tnode]
     v = ctx.render.ex_op1(tn)
     isNull = v is None or v == "null"
+    # the unreachable epilogue after an inlined `return X;` duplicates the
+    # return — skip it so a typed function keeps a single return path
+    prev = next((ln.strip() for ln in reversed(ctx.out) if ln.strip()), "")
+    if isNull and prev.startswith("return"):
+        return ret if ret < end else end
     ctx.line(n)
-    ctx.w(f"return {'' if isNull else unwrap(ctx.render.ch(v))}; /*{tag} */")
+    if isNull:
+        # a typed function's bare `return;` is a compile error
+        body = "return null;" if ctx.meta.get("hasRetType") else "return;"
+        ctx.w(f"{body} /*{tag} */")
+    else:
+        ctx.w(f"return {unwrap(ctx.render.ch(v))}; /*{tag} */")
     ctx.emitted += 1
     return ret if ret < end else end
 
