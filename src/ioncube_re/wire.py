@@ -396,6 +396,7 @@ def parse_wire(
         "opcnt": opcnt,
         "entcnt": entcnt,
         "ops": ops,
+        "entries": entries,
         "nodes": nodes,
         "pool": pool,
         "zvals": zv,
