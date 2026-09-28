@@ -256,6 +256,29 @@ class OperandRenderer:
     def ex_op2(self, n: Node) -> str | None:
         return self.ex(n, "op2")
 
+    def assigned_value(self, n: Node, which: str = "op2") -> str | None:
+        """The value operand of a scalar ASSIGN/ASSIGN_OP (op 22/26).
+
+        The encoder stores a direct IS_LONG const here with a +2
+        anti-tamper bias — the loader's Assign/AssignOp dispatch subtracts
+        2 again (M6-SUBWIRE §7.5, arena-verified for ASSIGN_OP; the plain
+        ASSIGN rides the same handler). Mirror it so `$x = 30` isn't lifted
+        as `$x = 32`. The DIM/OBJ value forms arrive through OP_DATA and are
+        untouched, and so are argument/comparison operands.
+        """
+        e = n.ent.get(which)
+        if e is not None and e.kind == 1 and e.raw < len(self.ctx.zvals):
+            z = self.ctx.zvals[e.raw]
+            if (z.get("type") & 0xFF) == 4:
+                if z.get("b"):
+                    v = ((z["b"] & 0xFFFFFFFF) << 32) | (z["a"] & 0xFFFFFFFF)
+                    if v >= 1 << 63:
+                        v -= 1 << 64
+                else:
+                    v = z["a"]
+                return str(v - 2)
+        return self.ex(n, which)
+
     def ch(self, e: str | None) -> str:
         return "null" if e is None else e
 
