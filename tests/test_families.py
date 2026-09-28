@@ -226,13 +226,17 @@ def test_isset_empty_families():
         [
             (114, {"op1": (8, 0), "res": (2, 0)}, {"res": 7 * 16}, 0),
             (114, {"op1": (8, 1), "res": (2, 0)}, {"res": 8 * 16}, 2),
+            # the production generation sets ZEND_ISEMPTY on bit0 (ext=1)
+            (114, {"op1": (8, 2), "res": (2, 0)}, {"res": 9 * 16}, 1),
         ],
-        cv={0: "x", 1: "y"},
+        cv={0: "x", 1: "y", 2: "z"},
     )
     emit_node(l, 0, l.thr)
     assert l.tempExpr[7] == "isset($x)"
     emit_node(l, 1, l.thr)
     assert l.tempExpr[8] == "empty($y)"
+    emit_node(l, 2, l.thr)
+    assert l.tempExpr[9] == "empty($z)"
 
 
 def test_unset_var_and_bind_global():
