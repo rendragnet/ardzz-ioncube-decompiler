@@ -25,11 +25,20 @@ def _chk_ok(b: bytes) -> bool:
     return u16(b, 0x7C) == ((s1 | (s2 << 8)) & 0xFFFF)
 
 
+def _magic(b: bytes) -> bool:
+    """The wire header's first word is [type|flags]; its low byte is the 0x02
+    component marker, the upper bytes carry per-function flag bits (00 00 00,
+    00 00 01, 00 01 00 and 10 00 00 all occur across these samples) — only the
+    low byte is invariant, so keying on the full `02 00 00 00` drops whole
+    functions."""
+    return len(b) >= 4 and (u32(b, 0) & 0xFF) == 0x02 and u32(b, 0) < 0x10000000
+
+
 def _plausible(b: bytes) -> bool:
     n = len(b)
     if n < 0x90:
         return False
-    if b[:4] != b"\x02\x00\x00\x00":
+    if not _magic(b):
         return False
     if not _chk_ok(b):
         return False
@@ -45,20 +54,28 @@ def _plausible(b: bytes) -> bool:
 
 
 def scan_wires(stream: bytes, start: int) -> list[tuple[int, int, dict]]:
-    """All sub-function wires in stream[start..): (offset, size, parse result)."""
+    """All sub-function wires in stream[start..): (offset, size, parse result).
+
+    Returns the WIRE size (r["end"]), not the record size. A record whose
+    declared size (the u32 before the wire) is larger than the wire carries a
+    trailing region of nested records (nested closure wires + their
+    descriptors): those nested wires are found by the outer byte scan and
+    their descriptors live between the outer wire's end and the nested
+    record, so the wire end — not the declared size — is what keeps the
+    per-record descriptor ranges contiguous."""
     found = []
     n = len(stream)
     p = start
     while p + 0x90 <= n:
-        if stream[p : p + 4] != b"\x02\x00\x00\x00":
+        if not _magic(stream[p : p + 4]):
             p += 1
             continue
-        cands = []
+        decl = None
         if p >= 4:
             s = u32(stream, p - 4)
             if 0x90 <= s and p + s <= n:
-                cands.append(s)
-        cands.append(n - p)
+                decl = s
+        cands = [decl, n - p] if decl is not None else [n - p]
         for S in dict.fromkeys(cands):
             w = stream[p : p + S]
             if not _plausible(w):
@@ -67,8 +84,13 @@ def scan_wires(stream: bytes, start: int) -> list[tuple[int, int, dict]]:
                 r = parse_wire(w)
             except Exception:
                 continue
-            if r["chk"] and r["end"] == S and r["thr"] > 0:
-                found.append((p, S, r))
+            if not (r["chk"] and r["thr"] > 0):
+                continue
+            # exact match, or the declared record size with the wire ending
+            # early (trailing nested-record region) — the latter is only
+            # trusted for the declared size, never the to-EOF fallback
+            if r["end"] == S or (decl is not None and S == decl and r["end"] <= S):
+                found.append((p, r["end"], r))
                 break
         p += 1
     return found
