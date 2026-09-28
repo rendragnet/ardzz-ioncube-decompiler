@@ -50,8 +50,15 @@ def render_type(ctrl: int, classnames: list[str] | None = None) -> str:
         return ""
     if len(bits) == 1:
         return bits[0]
-    if set(bits) == {"false", "true"}:
-        return "bool"
+    if "false" in bits and "true" in bits:
+        # PHP requires true|false to be spelled `bool`; a leading null makes
+        # it nullable (`?bool`).
+        rest = [b for b in bits if b not in ("false", "true")]
+        if rest == ["null"]:
+            return "?bool"
+        if not rest:
+            return "bool"
+        return "|".join(rest + ["bool"])
     if bits[0] == "null" and len(bits) == 2:
         return "?" + bits[1]
     return "|".join(bits)
