@@ -231,6 +231,10 @@ def lift_file(
             fn = ctx.fnName if ctx.fnName is not None else "{fn}"
             specs, ret = arg_specs(r)
             ctx.meta["hasRetType"] = bool(ret) and ret != "void"
+            # a PHP function name cannot be namespaced: `function A\B()` is a
+            # parse error, keep the leaf (`Ns\...\{closure}` -> `{closure}`)
+            if "\\" in fn:
+                fn = fn.rsplit("\\", 1)[-1]
             if fn in _PHP_RESERVED_FNS and not cd:
                 # a free function shadowing a PHP builtin (`extract`) is a
                 # compile error — suffix keeps the listing parseable
@@ -324,6 +328,7 @@ def lift_file(
     prodQueue: list[tuple[str, str | None]] = []
     prodSeen: set[str] = set()
     prodSerial = 0
+    prodQueueNames: list[str] = []
     if isProd:
         tailStart = boff + bsize
         if (
@@ -410,17 +415,17 @@ def lift_file(
                 fnNames = [fn_name_of(sm[0]) for sm in subMeta]
                 fnNames = [f for f in fnNames if f]
                 multi = len(fnNames) != len(set(fnNames))
-                tailLeafs: list[str] = []
-                if multi:
-                    seenLeaf = {cls}
-                    for nm in class_like_names(stream, tailStart):
-                        lf = nm.split("@")[0].rsplit("\\", 1)[-1]
-                        if (
-                            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", lf)
-                            and lf not in seenLeaf
-                        ):
-                            seenLeaf.add(lf)
-                            tailLeafs.append(lf)
+                allLeafs: list[str] = []
+                seenLeaf = {cls}
+                for nm in class_like_names(stream, tailStart):
+                    lf = nm.split("@")[0].rsplit("\\", 1)[-1]
+                    if (
+                        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", lf)
+                        and lf not in seenLeaf
+                    ):
+                        seenLeaf.add(lf)
+                        allLeafs.append(lf)
+                tailLeafs = allLeafs if multi else []
                 firstAlt = tailLeafs[0] if (multi and tailLeafs) else None
                 if firstAlt is not None and firstAlt != cls:
                     # the first component group is the leading class; keep the
@@ -431,6 +436,7 @@ def lift_file(
                     prodQueue = [(lf, None) for lf in tailLeafs]
                     _open_class(cls, parent)
                 prodClassOpen = True
+                prodQueueNames = [cls] + allLeafs
 
     # ---- eval class/enum recovery ----
     evalEnum: dict | None = None
@@ -589,6 +595,8 @@ def lift_file(
                 _open_class(nxt, nxtExt)
                 prodSeen = set()
             prodSeen.add(fn)
+        if prodClassOpen:
+            meta["classNames"] = [cls] + prodQueueNames
         meta["classDepth"] = bool(openClass is not None or prodClassOpen)
         if not isProd and evalEnum and evalEnum.get("promoted") and fn == "__construct":
             from .classrec import promoted_param
@@ -608,6 +616,13 @@ def lift_file(
         out.append("}\n")
     if prodClassOpen:
         out.append("} // end class\n" if debug else "}\n")
+    # a file-level `namespace` must precede every other statement; the main
+    # component's top-level code (define/require_once) is emitted first, so
+    # move a late namespace up to just after `<?php`
+    for ix in range(2, len(out)):
+        if out[ix].lstrip().startswith("namespace "):
+            out.insert(1, out.pop(ix))
+            break
     return {"text": "".join(out), "gt": gt_report, "stderr": stderr}
 
 

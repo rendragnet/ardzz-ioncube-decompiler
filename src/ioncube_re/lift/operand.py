@@ -24,6 +24,14 @@ from .model import LiftContext, Node
 def php_quote(s: bytes) -> str:
     t = s.decode("latin-1")
     if any(c in t for c in "\n\r\t"):
+        if "$" in t:
+            # a multi-line template carrying `{$a.b}`/`$x` literally: those
+            # are not valid/faithful double-quote interpolation, a nowdoc
+            # reproduces the exact bytes
+            sentinel = "EOT"
+            while sentinel in t:
+                sentinel += "_"
+            return f"<<<'{sentinel}'\n{t}\n{sentinel}"
         t = t.replace("\\", "\\\\").replace('"', '\\"')
         t = t.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
         return f'"{t}"'
@@ -32,6 +40,21 @@ def php_quote(s: bytes) -> str:
 
 def zval_php(z: dict, idx: int) -> str:
     """A zval as a PHP expression (icl_zval_php port + interned resolution)."""
+    raw = z.get("str")
+    if raw is not None and raw[:1] == b"\x81" and b"@:" in raw:
+        # a serialized constant-fetch record: either a plain namespaced
+        # constant (`@:65:...s<n>'Ns\NAME`) or a class constant
+        # (`@:64:...s<n>'Cls` ... `s<n>'NAME`, class-scope `self` included)
+        names = []
+        for m in re.finditer(rb"s(\d+)'", raw):
+            ln = int(m.group(1))
+            names.append(raw[m.end() : m.end() + ln].decode("latin-1"))
+        if names:
+            if names[0] == "self":
+                return f"self::{names[-1]}"
+            if len(names) == 1:
+                return f"\\{names[0]}"
+            return f"\\{names[0]}::{names[-1]}"
     t = z["type"] & 0xFF
     if t == 4:
         if z.get("b"):
@@ -339,6 +362,12 @@ class OperandRenderer:
         # only parses on PHP >= 8.4, while `(new X())->m()` is valid on every
         # version — in-place execution targets 8.2/8.3.
         if e.startswith("new "):
+            return "(" + e + ")"
+        # a literal receiver (an inlined negative int temp) needs parens:
+        # `-1[1]` parses as `-(1[1])`
+        if re.fullmatch(r"-?\d+", e) or (
+            len(e) >= 2 and e[0] in "\"'" and e[-1] == e[0]
+        ):
             return "(" + e + ")"
         return e
 
