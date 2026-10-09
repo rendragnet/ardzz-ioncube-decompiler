@@ -381,7 +381,10 @@ def _tc_records(ctx) -> list[tuple[int, int]]:
     for i in range(tc):
         s = u32(b, i * 16)
         h = u32(b, i * 16 + 4)
-        if 0 < s < ctx.thr and 0 < h < ctx.thr:
+        # A body with no prologue RECV/HANDLE_EXCEPTION nodes starts the try
+        # region at node 0, so keep `s == 0` (functions with parameters get a
+        # 1-2 node prologue and a nonzero start).
+        if 0 <= s < ctx.thr and 0 < h < ctx.thr:
             out.append((s, h))
     return out
 
