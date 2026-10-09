@@ -261,6 +261,20 @@ def _alias_149(ctx) -> None:
             and ctx.op[n.i - 1] in (68, 100) + _INIT + _SEND
         ):
             ctx.op[n.i] = 60
+            continue
+
+        # value-op ASSIGN aliases: op1 = a CV target, op2 = the value. A
+        # following OP_DATA means the write is into a dim/obj
+        # (ASSIGN_DIM); otherwise it is a scalar ASSIGN. Both were dropped
+        # outright while left at 149 (delimCode = dechex(...),
+        # $bankDetails['bankcode'] = ...).
+        if (
+            e1 is not None
+            and e1.kind == 8
+            and e2 is not None
+            and e2.kind in (1, 2, 4, 6, 8)
+        ):
+            ctx.op[n.i] = 23 if nop == 137 else 22
 
 
 # ---- jump-target calibration ----
