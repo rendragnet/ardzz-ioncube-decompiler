@@ -206,9 +206,19 @@ def cv_names(
                 p = p[1:]
             run.append(p.decode("latin-1"))
         if is_fn:
-            for k in range(min(numCV, len(run))):
-                nm = run[len(run) - min(numCV, len(run)) + k]
-                names[k] = nm
+            # The pool layout is [fnName][argnames][cvnames...][literals...]:
+            # CV slots 0..numArgs-1 repeat the parameter names, and the
+            # trailing pool literals are identifier-like too, so the CV run
+            # must start right after the arg names -- taking the last numCV
+            # entries let literals steal slots (getBillingCycleDays) and
+            # shifted every name by one (convertStateToCode).
+            numArgs = max(u32(r["hdr"], 0x14), len(arg_names(r)))
+            # `run` already excludes the docblock+fnName prefix, so it starts
+            # at the argument names.
+            base = numArgs if r["fnrec"] is not None else 0
+            for k in range(numCV):
+                if base + k < len(run):
+                    names[k] = run[base + k]
         else:
             for k in range(len(run)):
                 names[k] = run[k]
